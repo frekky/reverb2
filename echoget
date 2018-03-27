@@ -1,32 +1,53 @@
 #!/bin/bash
 
 RAW_MULTIPLEX_BIN="$(dirname $0/raw_multiplex)"
+PIDFILE=$(mktemp /tmp/echoget-$USER-pids-XXXXXXXX.xml)
+JUNKFILES=$(mktemp /tmp/echoget-$USER-junkfiles-XXXXXXXX.xml)
+xmltmp=`mktemp -u /tmp/echoget-$USER-presentation-XXXXXXXX.xml`
+swftmp=`mktemp -u /tmp/echoget-$USER-XXXXXXXX.swf`
 
+trap doExit INT
+
+echo "$JUNKFILES $PIDFILE $xmltmp $swftmp" >> $JUNKFILES
+
+# usage: swfcat <swfs_var>
+# swfs_var is name of environment variable that contains list of SWF files.
 function swfcat {
     SWFS=($(eval echo \$$1))
-    SWFS2=($(eval echo \$$2))
+    GNASH_PIPE="/tmp/echoget-$(uuidgen -r)"
+    
+    echo $GNASH_PIPE >> $JUNKFILES
     
     # iterate over array indices
     for i in ${!SWFS[@]}; do
-        SWF_1=${SWFS[$i]}
-        SWF_2=${SWFS2[$i]}
-        #echo "key=$i"
+        SWF_FILE=${SWFS[$i]}
+
         #echo "Processing frame $i: '...$(tail -c30 <<< "$SWF_1")' and '...$(tail -c30 <<< "$SWF_2")'" 1>&2
-        PIPE_1=$(mktemp)
-        PIPE_2=$(mktemp)
 
-        # Here comes the real magic
-        dump-gnash -D "$PIPE_1"@10 -1 "$SWF_1" > /dev/null &
-        dump-gnash -D "$PIPE_2"@10 -1 "$SWF_2" > /dev/null &
+        # Dump the SWF file to raw video
+        mkfifo "$GNASH_PIPE"
+        dump-gnash -D "$GNASH_PIPE@10" -1 "$SWF_FILE" 2>&1 > /dev/null &
+        GNASH_PID=$!
+        echo $GNASH_PID >> $PIDFILE
 
-        # wait for jobs to finish        
-        wait $(jobs -p)
+        # Now grab the first ~150 frames (the last frame is duplicated for some reason)
+        head --bytes=$(($WIDTH * $HEIGHT * 4 * $WANTFRAMES)) "$GNASH_PIPE"
+        wait $GNASH_PID
 
-        # now stick them together
-        $RAW_MULTIPLEX_BIN "$PIPE_1" "$PIPE_2" "$WIDTH" "$HEIGHT" "$WANTFRAMES" 4 2> /dev/null
+        rm -f "$GNASH_PIPE"
+    done
+    
+}
 
-       rm -f "$PIPE_1"
-       rm -f "$PIPE_2"
+function doExit {
+    #echo "Killing garbage: $(jobs -p) $(cat $PIDFILE)"
+    for x in $(cat $PIDFILE); do
+        kill -9 $x 2>/dev/null
+    done
+    for x in $(cat $JUNKFILES); do
+        #echo "removing $x"
+        ls -l $x
+        rm -f $x 2>/dev/null
     done
 }
 
@@ -38,18 +59,18 @@ outname="${2%.mp4}"
 if [ "x$1" == "x" ] || [ "x$2" == "x" ]; then
     echo "Usage: $0 <presentation.xml URL> <output name>"
     echo "Output name may be unit code, for example."
+    doExit
     exit 1
 fi
 
 if ! which mktemp wget ffmpeg dirname dump-gnash swfdump xmllint uuidgen $RAW_MULTIPLEX_BIN >/dev/null; then
     echo "Please note: swfdump (part of swftools), xmllint, dump-gnash (part of gnash, see README), ffmpeg and wget must be installed for this script to work."
     echo "You must also compile raw-multiplex."
+    doExit
     exit 1
 fi
 
 # presentation.xml contains relative paths
-xmltmp=`mktemp -u /tmp/echoget-$USER-presentation-XXXXXXXX.xml`
-swftmp=`mktemp -u /tmp/echoget-$USER-XXXXXXXX.swf`
 wget -q -O "$xmltmp" "$1"
 
 # a / is a / is a /
@@ -68,18 +89,25 @@ audio="$presdir"/audio.mp3
 
 # Fetch first file to determine resolution
 firstswf=`xmllint --xpath "//session-info/group[@type='projector']/track[@type='flash-movie']/data[1]/@uri" "$xmltmp" | sed s#uri=\"#"$swfdir"#g | sed 's/"//g'`
-wget -q -O "$swftmp" "$firstswf"
+
+wget -q -O "$swftmp" $firstswf
 
 HEIGHT=$(swfdump -Y "$swftmp" | sed 's/-Y //g')
 WIDTH=$(swfdump -X "$swftmp" | sed 's/-X //g')
 FPS=$(swfdump -r "$swftmp" | sed 's/-r //g')
 FRAMES=$(swfdump -f "$swftmp" | sed 's/-f //g')
+
+if [ "x$WIDTH" == "x" ] || [ "x$HEIGHT" == "x" ] || [ "x$FPS" == "x" ] || [ "x$FRAMES" == "x" ]; then
+    echo "Error getting SWF parameters!"
+    doExit
+    exit 1;
+fi
+
 WANTFRAMES=$(($FRAMES-1))
-
 FULLWIDTH=$(($WIDTH*2))
-ffmpegargs="-r $FPS -s:v ${FULLWIDTH}x${HEIGHT}"
 
-rm -f "$swftmp"
+ffmpegargs="-r $FPS -s:v ${WIDTH}x${HEIGHT}"
+
 echo ffmpeg args: "$ffmpegargs"
 
 # output path is date-formatted for your convenience
@@ -98,6 +126,7 @@ fi
 
 if [ -f "$outpath" ]; then
     echo "Output file at: $outpath already exists! Please remove first."
+    doExit
     exit 1
 fi
 
@@ -105,23 +134,38 @@ echo "${outpath}    $(date --date="@${udate}" +"%Y-%m-%d")    ${1}" >> $listfile
 echo "Creating output at: $outpath"
 
 mkdir -p `dirname "$outpath"`
-rm -f "$outpath"
-rm -f "$xmltmp"
-
-export SWF_FILES
-export SWF_FILES_2
+rm -f "$outpath" 2>/dev/null
 
 if echo "$@" | grep ' -n' > /dev/null; then
     echo "Called with '-n', not doing anything!"
+    doExit
     exit 0
 fi
 
-#PIPE_1="/tmp/echoget-$(uuidgen -r)"
-#PIPE_2="$PIPE_1-2"
+SESSION_ID="$(uuidgen -r)"
 
-# mkfifo "$PIPE_1" "$PIPE_2"
+STREAM_1="/tmp/echoget-$SESSION_ID"
+STREAM_2="/tmp/echoget-$SESSION_ID-2"
 
-(swfcat SWF_FILES SWF_FILES_2) | ffmpeg -f rawvideo -pix_fmt rgb32 $ffmpegargs \
-                                    -i - -i "$audio" -acodec copy -c:v libx264 -preset medium -hide_banner -tune stillimage -loglevel 32 "$outpath"
+mkfifo $STREAM_1 $STREAM_2
 
-rm "$PIPE_1" "$PIPE_2"
+(swfcat SWF_FILES > $STREAM_1) &
+echo $! >> $PIDFILE
+(swfcat SWF_FILES_2 > $STREAM_2) &
+echo $! >> $PIDFILE
+
+echo "$STREAM_1 $STREAM_2" >> $JUNKFILES
+
+FFMPEG_ARGS="
+        -f rawvideo -pix_fmt rgb32 $ffmpegargs -i file:$STREAM_1 \
+        -f rawvideo -pix_fmt rgb32 $ffmpegargs -i file:$STREAM_2 \
+        -i $audio -acodec copy \
+        -filter_complex hstack=inputs=2:shortest=0 \
+        -c:v libx264 -preset medium -max_muxing_queue_size 10000000 \
+        -hide_banner -tune stillimage -loglevel 32 $outpath"
+        
+echo "ffmpeg $FFMPEG_ARGS"
+
+ffmpeg $FFMPEG_ARGS
+
+doExit
