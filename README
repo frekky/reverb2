@@ -1,7 +1,7 @@
 reverb2
 =======
 
-Hello and welcome to reverb2, the ultimate in ripping software designed to work with Echo360!
+Hello and welcome to reverb2, the ultimate in media conversion software designed to work with Echo360!
 
 You will need a working installation of `gnash` (GNU flash) and you **must** be able to run the command `dump-gnash`. If you are having difficulty finding it, I suggest you compile it yourself according to https://stackoverflow.com/a/21023110
 
@@ -28,9 +28,6 @@ It should produce a list of mostly random URLs ending with /presentation.xml. Ea
 
 echoget
 -------
-
-Please remember to build `raw-multiplex`:
-gcc raw-multiplex.cpp -o raw-multiplex
 
 Usage: ./echoget <presentation.xml URL> <output name>
 Output name may be unit code, for example.

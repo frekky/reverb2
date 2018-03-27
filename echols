@@ -97,7 +97,7 @@ if __name__ == '__main__':
 
     if len(argv) < 2:
         print('USAGE:  %s [TAG=REGEX ...] https://ECHO_URL/' % argv[0])
-        print('Ex:     %s name=UNIT4321 start-timestamp=2017 http://media.lcs.uwa.edu.au/echocontent/' % argv[0])
+        print('Ex:     %s name=UNIT4321 start-timestamp=2018 http://echoserver.example.com/echocontent/' % argv[0])
         exit(1)
 
     for p in EchoBase(argv[-1].rstrip('/') + '/').presentations:
