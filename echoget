@@ -11,16 +11,15 @@
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-RAW_MULTIPLEX_BIN="$(dirname $0/raw_multiplex)"
 PIDFILE=$(mktemp /tmp/echoget-$USER-pids-XXXXXXXX.xml)
 JUNKFILES=$(mktemp /tmp/echoget-$USER-junkfiles-XXXXXXXX.xml)
-xmltmp=`mktemp -u /tmp/echoget-$USER-presentation-XXXXXXXX.xml`
-swftmp=`mktemp -u /tmp/echoget-$USER-XXXXXXXX.swf`
+xmltmp=$(mktemp -u /tmp/echoget-$USER-presentation-XXXXXXXX.xml)
+swftmp=$(mktemp -u /tmp/echoget-$USER-XXXXXXXX.swf)
 
 trap doExit INT
 
@@ -30,10 +29,10 @@ echo "$JUNKFILES $PIDFILE $xmltmp $swftmp" >> $JUNKFILES
 # swfs_var is name of environment variable that contains list of SWF files.
 function swfcat {
     SWFS=($(eval echo \$$1))
-    GNASH_PIPE="/tmp/echoget-$(uuidgen -r)"
-    
+    GNASH_PIPE=$(mktemp -u /tmp/echoget-$USER-XXXXXXXX.gnash-raw)
+
     echo $GNASH_PIPE >> $JUNKFILES
-    
+
     # iterate over array indices
     for i in ${!SWFS[@]}; do
         SWF_FILE=${SWFS[$i]}
@@ -52,7 +51,6 @@ function swfcat {
 
         rm -f "$GNASH_PIPE"
     done
-    
 }
 
 function doExit {
@@ -62,8 +60,8 @@ function doExit {
     done
     for x in $(cat $JUNKFILES); do
         #echo "removing $x"
-        ls -l $x
-        rm -f $x 2>/dev/null
+        #ls -l $x
+        rm -f $x 2>&1 >/dev/null
     done
 }
 
@@ -79,9 +77,8 @@ if [ "x$1" == "x" ] || [ "x$2" == "x" ]; then
     exit 1
 fi
 
-if ! which mktemp wget ffmpeg dirname dump-gnash swfdump xmllint uuidgen $RAW_MULTIPLEX_BIN >/dev/null; then
+if ! which md5sum mkfifo mktemp wget ffmpeg dirname dump-gnash swfdump xmllint >/dev/null; then
     echo "Please note: swfdump (part of swftools), xmllint, dump-gnash (part of gnash, see README), ffmpeg and wget must be installed for this script to work."
-    echo "You must also compile raw-multiplex."
     doExit
     exit 1
 fi
@@ -124,7 +121,7 @@ FULLWIDTH=$(($WIDTH*2))
 
 ffmpegargs="-r $FPS -s:v ${WIDTH}x${HEIGHT}"
 
-echo ffmpeg args: "$ffmpegargs"
+#echo ffmpeg args: "$ffmpegargs"
 
 # output path is date-formatted for your convenience
 timestamp=`xmllint --xpath "//session-info/presentation-properties/start-timestamp/text()" "$xmltmp"`
@@ -147,7 +144,6 @@ if [ -f "$outpath" ]; then
 fi
 
 echo "${outpath}    $(date --date="@${udate}" +"%Y-%m-%d")    ${1}" >> $listfile
-echo "Creating output at: $outpath"
 
 mkdir -p `dirname "$outpath"`
 rm -f "$outpath" 2>/dev/null
@@ -158,10 +154,8 @@ if echo "$@" | grep ' -n' > /dev/null; then
     exit 0
 fi
 
-SESSION_ID="$(uuidgen -r)"
-
-STREAM_1="/tmp/echoget-$SESSION_ID"
-STREAM_2="/tmp/echoget-$SESSION_ID-2"
+STREAM_1=$(mktemp -u /tmp/echoget-$USER-XXXXXXXX.stream0)
+STREAM_2=$(mktemp -u /tmp/echoget-$USER-XXXXXXXX.stream1)
 
 mkfifo $STREAM_1 $STREAM_2
 
@@ -179,9 +173,12 @@ FFMPEG_ARGS="
         -filter_complex hstack=inputs=2:shortest=0 \
         -c:v libx264 -preset medium -max_muxing_queue_size 10000000 \
         -hide_banner -tune stillimage -loglevel 32 $outpath"
-        
+echo ""
+echo "Downloading media to $outpath"
+echo "=============================================================="
 echo "ffmpeg $FFMPEG_ARGS"
-
+echo "=============================================================="
+echo ""
 ffmpeg $FFMPEG_ARGS
 
 doExit
