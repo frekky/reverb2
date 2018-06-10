@@ -61,5 +61,6 @@ then
 else
 	echo "Initial clone"
 	mkdir -p "$LOCALBASE"
+	echo -e "[InternetShortcut]\nURL=$ECHOBASE" > "$LOCALBASE/origin.url"
 	everyDir | listAndPull
 fi
