@@ -19,6 +19,8 @@
 export LOCALBASE="$1"
 export ECHOBASE=http://media.lcs.uwa.edu.au/echocontent
 
+export USERAGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393" # Edge
+
 function dirFromDeltaDays {
 	# Ugh date math. Perl easier than juggling between BSD and GNU date(1).
 	perl -MPOSIX=strftime -lne 'print strftime("%y%V/%u",localtime(time()+86400*$_))'
@@ -33,7 +35,7 @@ function everyDir {
 }
 
 function listDir {
-	wget -q -O - "$ECHOBASE/$1" | grep /icons/folder.gif | 
+	wget --user-agent "$USERAGENT" -q -O - "$ECHOBASE/$1" | grep /icons/folder.gif | 
 	sed 's!.*href="!!' | # strip to left of href attr
 	sed 's!/".*!!' | # strip to right
 	sed "s!^!$1/!" | # make listDir x return x/children
@@ -44,7 +46,7 @@ export -f listDir
 function pullDir {
 	mkdir -p "$LOCALBASE/$1"
 	cd "$LOCALBASE/$1"
-	wget -q --timestamping "$ECHOBASE/$1/presentation.xml"
+	wget --user-agent "$USERAGENT" -q --timestamping "$ECHOBASE/$1/presentation.xml"
 }
 export -f pullDir
 

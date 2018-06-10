@@ -35,6 +35,9 @@ import tempfile
 import urllib.parse
 
 
+USERAGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393"
+
+
 def info(*args, **kwargs):
     print('REVERB:', *args, **kwargs)
 
@@ -116,7 +119,7 @@ def pres2file(xml_url, out_path, careful=False):
             info('Downloading', len(urls), 'SWFs to', groupdir)
 
             parallel_list = '\n'.join(urls + ['']).encode('ascii')
-            sp.run(['parallel', '--will-cite', '-j10', 'wget', '-q', '{}'], input=parallel_list, cwd=groupdir, check=True)
+            sp.run(['parallel', '--will-cite', '-j10', 'wget', '--user-agent', USERAGENT, '-q', '{}'], input=parallel_list, cwd=groupdir, check=True)
 
             destfiles = [path.join(groupdir, url.split('/')[-1]) for url in urls]
             swf_local_paths[track] = destfiles
@@ -138,7 +141,7 @@ def pres2file(xml_url, out_path, careful=False):
         skip_secs = 0
         try:
             info('Downloading audio track')
-            sp.run(['wget', '-q', audio_url], check=True)
+            sp.run(['wget', '--user-agent', USERAGENT, '-q', audio_url], check=True)
             os.system('cp %s ~/' % audio_path)
         except:
             info('No audio track found at', audio_url)
