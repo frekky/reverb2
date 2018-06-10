@@ -119,7 +119,7 @@ def pres2file(xml_url, out_path, careful=False):
             info('Downloading', len(urls), 'SWFs to', groupdir)
 
             parallel_list = '\n'.join(urls + ['']).encode('ascii')
-            sp.run(['parallel', '--will-cite', '-j10', 'wget', '--user-agent', USERAGENT, '-q', '{}'], input=parallel_list, cwd=groupdir, check=True)
+            sp.run(['parallel', '--will-cite', '-j10', 'curl', '--user-agent', '"'+USERAGENT+'"', '-s', '-o', '{/}', '{}'], input=parallel_list, cwd=groupdir, check=True)
 
             destfiles = [path.join(groupdir, url.split('/')[-1]) for url in urls]
             swf_local_paths[track] = destfiles
@@ -141,7 +141,7 @@ def pres2file(xml_url, out_path, careful=False):
         skip_secs = 0
         try:
             info('Downloading audio track')
-            sp.run(['wget', '--user-agent', USERAGENT, '-q', audio_url], check=True)
+            sp.run(['curl', '--user-agent', USERAGENT, '-s', '-o', audio_path, audio_url], check=True)
             os.system('cp %s ~/' % audio_path)
         except:
             info('No audio track found at', audio_url)

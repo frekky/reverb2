@@ -35,7 +35,7 @@ function everyDir {
 }
 
 function listDir {
-	wget --user-agent "$USERAGENT" -q -O - "$ECHOBASE$1" | grep /icons/folder.gif | 
+	curl --user-agent "$USERAGENT" -s "$ECHOBASE$1" | grep /icons/folder.gif | 
 	sed 's!.*href="!!' | # strip to left of href attr
 	sed 's!".*!!' | # strip to right
 	sed "s!^!$1!" # make listDir x return x/children
@@ -43,9 +43,7 @@ function listDir {
 export -f listDir
 
 function pullDir {
-	mkdir -p "$LOCALBASE/$1"
-	cd "$LOCALBASE/$1"
-	wget --user-agent "$USERAGENT" -q --timestamping "$ECHOBASE$1"presentation.xml"
+	curl --user-agent "$USERAGENT" -s --create-dirs -o "$LOCALBASE/$1"presentation.xml "$ECHOBASE$1"presentation.xml
 }
 export -f pullDir
 
