@@ -24,11 +24,15 @@
 # - wget
 
 
+import datetime
+import dateutil.parser
 import itertools
 import lxml.etree
 import os
 import os.path as path
+import re
 import scipy.stats
+import string
 import subprocess as sp
 import sys
 import tempfile
@@ -82,24 +86,78 @@ def how_much_leading_silence(audio_path):
     return 0
 
 
-def pres2file(xml_url, out_path, careful=False):
+def mkname(xml):
+    # Date
+    rawdate = xml.xpath('//session-info/presentation-properties/start-timestamp/text()')[0]
+    rawdate = re.sub(r'([0-3][0-9])/([01][0-9])/((?:[12][0-9])[0-9][0-9])', r'\3-\2-\1', rawdate) # DD/MM/YYYY -> YYYY-MM-DD
+    try:
+        d = dateutil.parser.parse(rawdate, ignoretz=True)
+    except ValueError:
+        datestr = ''
+    else:
+        if d.minute >= 50:
+            d += datetime.timedelta(minutes=60-d.minute)
+        datestr = d.strftime('%Y-%m-%d %a %H:%M')
+
+    # Most important deets
+    name = xml.xpath('//session-info/presentation-properties/name/text()')[0]
+    desc = xml.xpath('//session-info/presentation-properties/description/text()')[0]
+
+    # Try to get course code
+    trash = name + ' ' + desc
+    ucodechars = string.ascii_uppercase + string.digits + '-'
+    trash = ''.join(c if c in ucodechars else ' ' for c in trash)
+    ucodes = re.findall(r'\b[A-Z]{3,4}(?:-| )?[0-9]{3,4}\b', trash)
+    ucodes = [x.replace('-', '').replace(' ', '') for x in ucodes]
+    if ucodes:
+        coursecode = max(ucodes, key=ucodes.count)
+    else:
+        coursecode = ''
+
+    # Try to get meaningful title
+    title = name
+    title = re.sub(r'\S*_CR/([A-Z][A-Za-z]+)\S*', r'\1', title, flags=re.IGNORECASE)
+    title = re.sub(r'\[repeat\]', '', title, flags=re.IGNORECASE)
+    title = re.sub(r'\bsplus\b', '', title, flags=re.IGNORECASE)
+    if coursecode:
+        ucode_regex = re.sub(r'([A-Z])([0-9])', r'\1(?:-| )?\2', coursecode)
+        title = re.sub(r'\b' + ucode_regex + r'(_\S+)?', '', title, flags=re.IGNORECASE)
+    title = title.replace('/', '-')
+    title = title.replace('()', '').replace('[]', '').replace('{}', '') # might have enclosed the above
+    tostrip = ''.join(c for c in string.punctuation if c not in '()[]{}<>') + string.whitespace
+    title = title.strip(tostrip)
+
+    fname = ' '.join([datestr, coursecode, title]).strip()
+    fname = ' '.join(fname.split())
+    fname = fname[:255 - len('.mp4')]
+
+    return fname
+
+
+def pres2file(xml_url, out_path='', careful=False):
     with tempfile.TemporaryDirectory(suffix='-reverb') as tmpdir:
         # chdir into our own temp directory (makes all the bash commands look nicer)
         out_path = path.realpath(out_path)
         swfcat_bin = path.join(path.dirname(path.realpath(__file__)), 'swfcat.sh')
         os.chdir(tmpdir)
 
+        # Parse the XML!
+        if not xml_url.endswith('.xml'):
+            xml_url = xml_url.rstrip('/') + '/presentation.xml'
         info('Input:', xml_url)
+        xml = lxml.etree.parse(xml_url)
+
+        # Decide where to put the output!
+        if os.path.isdir(out_path):
+            out_path = path.join(out_path, mkname(xml))
+        if not out_path.lower().endswith('.mp4'):
+            out_path += '.mp4'
         info('Output:', out_path)
 
         if careful:
             info('Being --careful')
 
-        if not out_path.endswith('.mp4'):
-            info("Non-MP4 output file extension, probably won't work")
-
         # List all the SWFs that make up this presentation
-        xml = lxml.etree.parse(xml_url)
         track_names = xml.xpath("//session-info/group[contains(@type,'projector')]/track[@type='flash-movie']/@directory")
 
         swf_remote_urls = {} # {track: [urls...], ...}
