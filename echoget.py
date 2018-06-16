@@ -24,6 +24,7 @@
 # - wget
 
 
+import argparse
 import datetime
 import dateutil.parser
 import itertools
@@ -267,13 +268,11 @@ def pres2file(xml_url, out_path='', careful=False):
 
 
 if __name__ == '__main__':
-    args = sys.argv[1:]
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--out', '-o', action='store', default='', metavar='PATH', help='Destination file or directory')
+    parser.add_argument('--careful', action='store_true', help='Omit silence-skipping and duplicate stream thinning')
+    parser.add_argument('urls', metavar='URL', nargs='+', help='Presentation URLs')
+    args = parser.parse_args()
 
-    careful = False
-    if args[0] == '--careful':
-        del args[0]
-        careful = True
-
-    xml_url, out_path = args
-
-    pres2file(xml_url, out_path, careful=careful)
+    for url in args.urls:
+        pres2file(url, args.out, careful=args.careful)
