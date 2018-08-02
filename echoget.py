@@ -25,14 +25,18 @@
 
 
 import argparse
+import contextlib
 import datetime
 import dateutil.parser
+import hashlib
 import itertools
 import lxml.etree
 import os
 import os.path as path
+import random
 import re
 import scipy.stats
+import shlex
 import string
 import subprocess as sp
 import sys
@@ -40,7 +44,30 @@ import tempfile
 import urllib.parse
 
 
-USERAGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393"
+USERAGENT = random.choice([
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393"
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:53.0) Gecko/20100101 Firefox/53.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393',
+    'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)',
+    'Mozilla/5.0 (Windows; U; MSIE 7.0; Windows NT 6.0; en-US)',
+    'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 5.1; Trident/4.0; .NET CLR 1.1.4322; .NET CLR 2.0.50727; .NET CLR 3.0.4506.2152; .NET CLR 3.5.30729)',
+    'Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.0; Trident/5.0;  Trident/5.0)',
+    'Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.2; Trident/6.0; MDDCJS)',
+    'Mozilla/5.0 (compatible, MSIE 11, Windows NT 6.3; Trident/7.0; rv:11.0) like Gecko',
+    'Mozilla/5.0 (iPad; CPU OS 8_4_1 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12H321 Safari/600.1.4',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 10_3_1 like Mac OS X) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.0 Mobile/14E304 Safari/602.1',
+    'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+    'Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)',
+    'Mozilla/5.0 (Linux; Android 6.0.1; SAMSUNG SM-G570Y Build/MMB29K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/4.0 Chrome/44.0.2403.133 Mobile Safari/537.36',
+    'Mozilla/5.0 (Linux; Android 5.0; SAMSUNG SM-N900 Build/LRX21V) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/2.1 Chrome/34.0.1847.76 Mobile Safari/537.36',
+    'Mozilla/5.0 (Linux; Android 6.0.1; SAMSUNG SM-N910F Build/MMB29M) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/4.0 Chrome/44.0.2403.133 Mobile Safari/537.36',
+    'Mozilla/5.0 (Linux; U; Android-4.0.3; en-us; Galaxy Nexus Build/IML74K) AppleWebKit/535.7 (KHTML, like Gecko) CrMo/16.0.912.75 Mobile Safari/535.7',
+    'Mozilla/5.0 (Linux; Android 7.0; HTC 10 Build/NRD90M) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.83 Mobile Safari/537.36',
+])
+
+DL_XATTR = 'user.reverb.origin'
+SWFCAT_BIN = path.join(path.dirname(path.realpath(__file__)), 'swfcat.sh')
 
 
 def info(*args, **kwargs):
@@ -53,7 +80,7 @@ def nonidentical_tracks(tracks, track_file_dict):
     for pair in possible_pairs:
         if not all(x in tracks for x in pair): continue
 
-        sizes = [[os.path.getsize(p) for p in track_file_dict[el]] for el in pair]
+        sizes = [[path.getsize(p) for p in track_file_dict[el]] for el in pair]
 
         pearsonr = scipy.stats.pearsonr(*sizes)[0] # really terrible abuse of this function
         rsq = pearsonr ** 2
@@ -87,6 +114,13 @@ def how_much_leading_silence(audio_path):
     return 0
 
 
+def get_prop(xml, prop):
+    try:
+        return xml.xpath('//session-info/%s/text()' % prop)[0].strip()
+    except:
+        return ''
+
+
 def mkname(xml):
     # Date
     rawdate = xml.xpath('//session-info/presentation-properties/start-timestamp/text()')[0]
@@ -98,7 +132,7 @@ def mkname(xml):
     else:
         if d.minute >= 50:
             d += datetime.timedelta(minutes=60-d.minute)
-        datestr = d.strftime('%Y-%m-%d %a %H:%M')
+        datestr = d.strftime('%Y-%m-%d %a %H%M')
 
     # Most important deets
     name = xml.xpath('//session-info/presentation-properties/name/text()')[0]
@@ -128,151 +162,245 @@ def mkname(xml):
     tostrip = ''.join(c for c in string.punctuation if c not in '()[]{}<>') + string.whitespace
     title = title.strip(tostrip)
 
-    fname = ' '.join([datestr, coursecode, title]).strip()
-    fname = ' '.join(fname.split())
-    fname = fname[:255 - len('.mp4')]
+    checkname = ' '.join([datestr, coursecode, title]).strip()
+    checkname = ' '.join(checkname.split())
+    checkname = checkname.replace('?', '').replace(':', '')
+    checkname = checkname[:255 - len('.mp4')]
 
-    return fname
+    return checkname
 
 
-def pres2file(xml_url, out_path='', careful=False):
-    with tempfile.TemporaryDirectory(suffix='-reverb') as tmpdir:
-        # chdir into our own temp directory (makes all the bash commands look nicer)
-        out_path = path.realpath(out_path)
-        swfcat_bin = path.join(path.dirname(path.realpath(__file__)), 'swfcat.sh')
-        os.chdir(tmpdir)
+def mkfile_atomic(template):
+    main, ext = path.splitext(template)
 
-        # Parse the XML!
-        if not xml_url.endswith('.xml'):
-            xml_url = xml_url.rstrip('/') + '/presentation.xml'
-        info('Input:', xml_url)
-        xml = lxml.etree.parse(xml_url)
+    idx = 1
+    while True:
+        if idx == 1:
+            whole = main + ext
+        else:
+            whole = main + ' ' + str(idx) + ext
 
-        # Decide where to put the output!
-        if os.path.isdir(out_path):
-            out_path = path.join(out_path, mkname(xml))
-        if not out_path.lower().endswith('.mp4'):
-            out_path += '.mp4'
-        info('Output:', out_path)
-
-        if careful:
-            info('Being --careful')
-
-        # List all the SWFs that make up this presentation
-        track_names = xml.xpath("//session-info/group[contains(@type,'projector')]/track[@type='flash-movie']/@directory")
-
-        swf_remote_urls = {} # {track: [urls...], ...}
-        for track in track_names:
-            tag = xml.xpath("//session-info/group[contains(@type,'projector')]/track[@type='flash-movie' and @directory='%s']" % track)[0]
-            filenames = tag.xpath("data/@uri")
-
-            urls = [urllib.parse.urljoin(xml_url, track+'/'+fn) for fn in filenames]
-            swf_remote_urls[track] = urls
-
-        # Download SWFs, somewhat concurrently
-        swf_local_paths = {} # {track: [paths...], ...}
-        for track in track_names:
-            groupdir = 'group-'+track
-            os.mkdir(groupdir)
-            urls = swf_remote_urls[track]
-            info('Downloading', len(urls), 'SWFs to', groupdir)
-
-            parallel_list = '\n'.join(urls + ['']).encode('ascii')
-            sp.run(['parallel', '--will-cite', '-j10', 'curl', '--user-agent', '"'+USERAGENT+'"', '-s', '-o', '{/}', '{}'], input=parallel_list, cwd=groupdir, check=True)
-
-            destfiles = [path.join(groupdir, url.split('/')[-1]) for url in urls]
-            swf_local_paths[track] = destfiles
-
-        # Check for and remove identical files
-        if not careful:
-            track_names = nonidentical_tracks(track_names, swf_local_paths)
-
-        # Sort the tracks by size (live video on the right)
-        track_totals = {}
-        for track in track_names:
-            size = sum(os.path.getsize(p) for p in swf_local_paths[track])
-            track_totals[track] = size
-        track_names = sorted(track_names, key=track_totals.get)
-
-        # Guess where audio track is (not in xml!)
-        audio_path = 'audio.mp3'
-        audio_url = urllib.parse.urljoin(xml_url, audio_path)
-        skip_secs = 0
         try:
-            info('Downloading audio track')
-            sp.run(['curl', '--user-agent', USERAGENT, '-s', '-o', audio_path, audio_url], check=True)
-            os.system('cp %s ~/' % audio_path)
+            open(whole, 'x').close()
+        except FileExistsError:
+            idx += 1
+        else:
+            break
+
+    return whole
+
+
+@contextlib.contextmanager
+def close_when_done(path):
+    try:
+        fname = path.name
+    except AttributeError:
+        fname = path
+
+    try:
+        yield path
+    finally:
+        try:
+            os.unlink(fname)
+        except OSError:
+            pass
+
+
+def fail_if_already_downloaded(dest_dir, xml_url, exclude=None):
+    for checkname in os.listdir(dest_dir):
+        ext = path.splitext(checkname)[1].lower()
+        if ext not in ('.m4v', '.mp4'): continue
+
+        checkpath = path.join(dest_dir, checkname)
+        if exclude and path.realpath(checkpath) == path.realpath(exclude): continue
+        if not path.isfile(checkpath): continue
+
+        try:
+            with open(checkpath, 'rb') as f:
+                f.seek(-4096, os.SEEK_END)
+                metadata = f.read()
         except:
-            info('No audio track found at', audio_url)
-            audio_path = None
+            continue
 
-        # Skip leading silence
-        skip_secs = 0
-        if audio_path and not careful:
-            skip_secs = how_much_leading_silence(audio_path)
-        if skip_secs:
-            info('Skipping', skip_secs, 'sec of silence')
+        metadata = metadata.replace(b'https://', b'http://')
+        norm_url = xml_url.encode('ascii').replace(b'https://', b'http://')
 
-        # Crafting the perfect bash command: a master class
-        # List of strings to put in the ffmpeg command line, one per stream.
-        # Just to be very clear, the following code block does no video processing.
-        # It just prepares the ffmpeg command.
-        dumpers = {}
-        for track in track_names:
-            paths = swf_local_paths[track]
+        if norm_url in metadata:
+            raise FileExistsError('%r matches' % checkpath)
 
-            # get some vital statistics from the first swf
-            firstswf = paths[0]
-            args = ['-r', '-X', '-Y']
-            vals = (sp.run(['swfdump', arg, firstswf], check=True, stdout=sp.PIPE).stdout.decode('ascii').rstrip().split()[-1] for arg in args)
-            vals = (int(float(x)) for x in vals)
-            swf_fps, swf_x, swf_y = vals
-            bytes_per_frame = swf_x * swf_y * 4
 
-            # get frames-per-SWF from the XML (not from the SWF iteself, because SWFs usually have one extra frame, which wrecks the timing)
-            fctag = xml.xpath("//session-info/group[contains(@type,'projector')]/track[@type='flash-movie' and @directory='%s']/data/@duration" % track)[0]
-            frames_per_swf = int(fctag) * swf_fps // 1000
+def urlhash(url):
+    return hashlib.sha1(url.replace('https://', 'http://').encode('ascii')).hexdigest()
 
-            # one of the args to swfcat.sh: a text file containing a list of swf paths
-            filelist_txt_file = 'group-%s.txt'%track
-            with open(filelist_txt_file, 'w') as f:
-                for p in paths:
-                    print(p, file=f)
 
-            # use swfcat.sh to dump-gnash a bunch of swfs as raw video on stdout
-            swfcat_cmd = '{swfcat_bin} {swf_fps} {frames_per_swf} {bytes_per_frame} {filelist_txt_file}'.format(**locals())
+def pres2file(xml_url, dest_suggestion='', careful=False, short=False):
+    if path.isdir(dest_suggestion):
+        dest_dir = dest_suggestion.rstrip('/')
+    else:
+        dest_dir = path.dirname(dest_suggestion)
 
-            # then use bash process substitution to get that output into a named pipe, ready for ffmpeg to read
-            dumper = '-f rawvideo -pix_fmt rgb32 -r {swf_fps} -s:v {swf_x}x{swf_y} -i file:<({swfcat_cmd})'.format(**locals())
-            dumpers[track] = dumper
+    if not xml_url.endswith('.xml'):
+        xml_url = xml_url.rstrip('/') + '/presentation.xml'
+    info('Input:', xml_url)
 
-        # Requires bash because we use process substitution to capture swfcat's output
-        # Confession: the old-timey pix_fmt and transcoding the audio track are for QT compatibility
-        ffmpeg_cmd = ' '.join([
-            'ffmpeg',
-            '-hide_banner -nostdin',
-            '-nostats -loglevel error', # comment to get progress
-            '-y', # overwrite dest without asking
-            *(dumpers[t] for t in track_names),
-            ('-i %s -c:a aac -b:a 32k' % audio_path) if audio_path else '',
-            ('-ss %f' % skip_secs) if skip_secs else '',
-            ('-filter_complex:v hstack=inputs=%d:shortest=0' % len(track_names)) if len(track_names) > 1 else '',
-            '-c:v libx264 -pix_fmt:v yuv420p -crf:v 26 -preset:v fast -tune:v stillimage',
-            out_path,
-        ])
+    # Hash the "canonical" URL and create a so-named file exclusively, for while we're downloading
+    progresspath = path.join(dest_dir, '.dl-' + urlhash(xml_url))
+    with close_when_done(open(progresspath, 'x')) as progressfile:
+        print(xml_url, file=progressfile)
+        progressfile.flush()
 
-        print(' FFMPEG COMMAND '.center(72, '-'))
-        print(ffmpeg_cmd)
-        print('-' * 72)
-        sp.run(['bash', '-c', ffmpeg_cmd], check=True) # sh won't work
+        # Check again now that we have created our file
+        fail_if_already_downloaded(dest_dir, xml_url)
+
+        xml = lxml.etree.fromstring(sp.run(['curl', '--user-agent', '"'+USERAGENT+'"', '-s', xml_url], check=True, stdout=sp.PIPE).stdout)
+
+        if path.isdir(dest_suggestion):
+            dest_name = mkname(xml)
+        else:
+            dest_name = path.basename(dest_suggestion)
+
+        if dest_name.lower().endswith('.mp4'):
+            dest_name = dest_name[:-4]
+
+        tmpdest = mkfile_atomic(path.join(dest_dir, dest_name + ' INCOMPLETE.mp4'))
+        info('Temp output:', tmpdest)
+
+        with tempfile.TemporaryDirectory(suffix='-reverb') as tmpdir, close_when_done(tmpdest):
+            # List all the SWFs that make up this presentation
+            track_names = xml.xpath("//session-info/group[contains(@type,'projector')]/track[@type='flash-movie']/@directory")
+
+            swf_remote_urls = {} # {track: [urls...], ...}
+            for track in track_names:
+                tag = xml.xpath("//session-info/group[contains(@type,'projector')]/track[@type='flash-movie' and @directory='%s']" % track)[0]
+                filenames = tag.xpath("data/@uri")
+
+                urls = [urllib.parse.urljoin(xml_url, track+'/'+fn) for fn in filenames]
+                if short:
+                    del urls[4:]
+                swf_remote_urls[track] = urls
+
+            # Download SWFs, somewhat concurrently
+            swf_local_paths = {} # {track: [paths...], ...}
+            for track in track_names:
+                groupdir = path.join(tmpdir, 'group-'+track)
+                os.mkdir(groupdir)
+                urls = swf_remote_urls[track]
+                info('Downloading', len(urls), 'SWFs to', groupdir)
+
+                parallel_list = '\n'.join(urls + ['']).encode('ascii')
+                sp.run(['parallel', '--will-cite', '-j10', 'curl', '--user-agent', '"'+USERAGENT+'"', '-s', '-o', '{/}', '{}'], input=parallel_list, cwd=groupdir, check=True)
+
+                destfiles = [path.join(groupdir, url.split('/')[-1]) for url in urls]
+                swf_local_paths[track] = destfiles
+
+            # Check for and remove identical files
+            if not careful:
+                track_names = nonidentical_tracks(track_names, swf_local_paths)
+
+            # Sort the tracks by size (live video on the right)
+            track_totals = {}
+            for track in track_names:
+                size = sum(path.getsize(p) for p in swf_local_paths[track])
+                track_totals[track] = size
+            track_names = sorted(track_names, key=track_totals.get)
+
+            # Guess where audio track is (not in xml!)
+            audio_path = 'audio.mp3'
+            audio_url = urllib.parse.urljoin(xml_url, audio_path)
+            skip_secs = 0
+            try:
+                info('Downloading audio track')
+                sp.run(['curl', '--user-agent', USERAGENT, '-s', '-o', audio_path, audio_url], cwd=tmpdir, check=True)
+            except:
+                info('No audio track found at', audio_url)
+                audio_path = None
+            else:
+                audio_path = path.join(tmpdir, audio_path)
+
+            # Skip leading silence
+            skip_secs = 0
+            if audio_path and not careful:
+                skip_secs = how_much_leading_silence(audio_path)
+            if skip_secs:
+                info('Skipping', skip_secs, 'sec of silence')
+
+            # Crafting the perfect bash command: a master class
+            # List of strings to put in the ffmpeg command line, one per stream.
+            # Just to be very clear, the following code block does no video processing.
+            # It just prepares the ffmpeg command.
+            dumpers = {}
+            for track in track_names:
+                paths = swf_local_paths[track]
+
+                # get some vital statistics from the first swf
+                firstswf = paths[0]
+                args = ['-r', '-X', '-Y']
+                vals = (sp.run(['swfdump', arg, firstswf], check=True, stdout=sp.PIPE).stdout.decode('ascii').rstrip().split()[-1] for arg in args)
+                vals = (int(float(x)) for x in vals)
+                swf_fps, swf_x, swf_y = vals
+                bytes_per_frame = swf_x * swf_y * 4
+
+                # get frames-per-SWF from the XML (not from the SWF iteself, because SWFs usually have one extra frame, which wrecks the timing)
+                fctag = xml.xpath("//session-info/group[contains(@type,'projector')]/track[@type='flash-movie' and @directory='%s']/data/@duration" % track)[0]
+                frames_per_swf = int(fctag) * swf_fps // 1000
+
+                # one of the args to swfcat.sh: a text file containing a list of swf paths
+                filelist_txt_file = path.join(tmpdir, 'group-%s.txt'%track)
+                with open(filelist_txt_file, 'w') as f:
+                    for p in paths:
+                        print(p, file=f)
+
+                # use swfcat.sh to dump-gnash a bunch of swfs as raw video on stdout
+                swfcat_cmd = [shlex.quote(SWFCAT_BIN), swf_fps, frames_per_swf, bytes_per_frame, filelist_txt_file]
+                swfcat_cmd = ' '.join(str(x) for x in swfcat_cmd)
+
+                # then use bash process substitution to get that output into a named pipe, ready for ffmpeg to read
+                dumper = '-f rawvideo -pix_fmt rgb32 -r {swf_fps} -s:v {swf_x}x{swf_y} -i file:<({swfcat_cmd})'.format(**locals())
+                dumpers[track] = dumper
+
+            # Stuff all the metadata we know into a freeform comment (because it's all crap anyway)
+            comment = [
+                ('Source URL', xml_url),
+                ('Original Name', get_prop(xml, 'presentation-properties/name')),
+                ('Original Description', get_prop(xml, 'presentation-properties/description')),
+                ('Original Location', get_prop(xml, 'presentation-properties/location')),
+                ('Original Timestamp', get_prop(xml, 'presentation-properties/start-timestamp')),
+                ('Original Presenter', get_prop(xml, 'presenter-properties/name')),
+            ]
+            comment = '\n'.join('%s: %s' % (k, v) for (k, v) in comment)
+
+            # Requires bash because we use process substitution to capture swfcat's output
+            # Confession: the old-timey pix_fmt and transcoding the audio track are for QT compatibility
+            ffmpeg_cmd = ' '.join([
+                'ffmpeg',
+                '-hide_banner -nostdin',
+                '-nostats -loglevel error', # comment to get progress
+                '-y', # overwrite dest without asking
+                *(dumpers[t] for t in track_names),
+                ('-i %s -c:a aac -b:a 32k' % audio_path) if audio_path else '',
+                '-map_metadata -1 -metadata comment=' + shlex.quote(comment), # strip metadata from input files
+                ('-ss %f' % skip_secs) if skip_secs else '',
+                ('-filter_complex:v hstack=inputs=%d:shortest=0' % len(track_names)) if len(track_names) > 1 else '',
+                '-c:v libx264 -pix_fmt:v yuv420p -crf:v 26 -preset:v fast -tune:v stillimage',
+                shlex.quote(tmpdest),
+            ])
+
+            print(' FFMPEG COMMAND '.center(72, '-'))
+            print(ffmpeg_cmd.replace('\n', '<newline>'))
+            print('-' * 72)
+            sp.run(['bash', '-c', ffmpeg_cmd], check=True) # sh won't work
+
+            finaldest = mkfile_atomic(path.join(dest_dir, dest_name + '.mp4'))
+            info('Final output:', finaldest)
+            os.rename(tmpdest, finaldest)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out', '-o', action='store', default='', metavar='PATH', help='Destination file or directory')
+    parser.add_argument('--out', '-o', action='store', default='', type=path.realpath, metavar='PATH', help='Destination file or directory')
     parser.add_argument('--careful', action='store_true', help='Omit silence-skipping and duplicate stream thinning')
-    parser.add_argument('urls', metavar='URL', nargs='+', help='Presentation URLs')
+    parser.add_argument('--short', action='store_true', help='[debug] Save only a few minutes')
+    parser.add_argument('url', action='store', metavar='URL', help='Presentation URL')
     args = parser.parse_args()
 
-    for url in args.urls:
-        pres2file(url, args.out, careful=args.careful)
+    pres2file(args.url, args.out, careful=args.careful, short=args.short)
